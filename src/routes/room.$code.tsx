@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import {
   ArrowLeft, Check, Copy, Crown, HelpCircle, Loader2, Send,
-  Sparkles, Target, Trophy, X, CircleHelp,
+  Sparkles, Target, Trophy, X, CircleHelp, PartyPopper,
 } from "lucide-react";
 
 export const Route = createFileRoute("/room/$code")({
@@ -28,11 +28,16 @@ type Room = {
   host_id: string;
   word_owner_id: string | null;
   secret_word: string | null;
-  status: string;
+  status: string; // 'waiting' | 'playing' | 'round_over' | 'finished'
   winner_id: string | null;
   winner_name: string | null;
+  round_number: number;
+  max_rounds: number;
+  current_turn_user_id: string | null;
+  round_winner_id: string | null;
+  round_winner_name: string | null;
 };
-type Player = { id: string; user_id: string; display_name: string };
+type Player = { id: string; user_id: string; display_name: string; score: number; joined_at?: string };
 type Message = {
   id: string;
   room_id: string;
@@ -44,6 +49,18 @@ type Message = {
   is_correct: boolean;
   created_at: string;
 };
+
+function nextTurnUserId(players: Player[], ownerId: string | null, currentTurnId: string | null): string | null {
+  const askers = players
+    .slice()
+    .sort((a, b) => (a.joined_at ?? "").localeCompare(b.joined_at ?? ""))
+    .filter((p) => p.user_id !== ownerId);
+  if (askers.length === 0) return null;
+  if (!currentTurnId) return askers[0].user_id;
+  const idx = askers.findIndex((p) => p.user_id === currentTurnId);
+  if (idx === -1) return askers[0].user_id;
+  return askers[(idx + 1) % askers.length].user_id;
+}
 
 function RoomPage() {
   const { code } = useParams({ from: "/room/$code" });
@@ -62,31 +79,16 @@ function RoomPage() {
     if (!authLoading && !user) navigate({ to: "/auth" });
   }, [authLoading, user, navigate]);
 
-  // Load room + subscribe
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-
     async function load() {
-      const { data: r, error } = await supabase
-        .from("rooms")
-        .select("*")
-        .eq("code", code)
-        .maybeSingle();
+      const { data: r, error } = await supabase.from("rooms").select("*").eq("code", code).maybeSingle();
       if (cancelled) return;
-      if (error) {
-        toast.error(error.message);
-        setLoading(false);
-        return;
-      }
-      if (!r) {
-        setNotFound(true);
-        setLoading(false);
-        return;
-      }
+      if (error) { toast.error(error.message); setLoading(false); return; }
+      if (!r) { setNotFound(true); setLoading(false); return; }
       setRoom(r as Room);
 
-      // Ensure player is in the room
       await supabase.from("room_players").upsert(
         { room_id: r.id, user_id: user!.id, display_name: getDisplayName(user) },
         { onConflict: "room_id,user_id" },
@@ -102,25 +104,17 @@ function RoomPage() {
       setLoading(false);
     }
     load();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [code, user]);
 
-  // Realtime subscriptions
   useEffect(() => {
     if (!room) return;
     const channel = supabase
       .channel(`room-${room.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${room.id}` },
         (payload) => {
-          if (payload.eventType === "DELETE") {
-            toast.message("Room was closed");
-            navigate({ to: "/" });
-          } else {
-            setRoom(payload.new as Room);
-          }
+          if (payload.eventType === "DELETE") { toast.message("Room was closed"); navigate({ to: "/" }); }
+          else setRoom(payload.new as Room);
         })
       .on("postgres_changes", { event: "*", schema: "public", table: "room_players", filter: `room_id=eq.${room.id}` },
         (payload) => {
@@ -135,22 +129,15 @@ function RoomPage() {
           else if (payload.eventType === "DELETE") setMessages((m) => m.filter((x) => x.id !== (payload.old as Message).id));
         })
       .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [room?.id, navigate]);
 
-  // Autoscroll
   useEffect(() => {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" });
   }, [messages.length]);
 
   if (authLoading || loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="size-8 animate-spin text-primary" />
-      </div>
-    );
+    return <div className="min-h-screen flex items-center justify-center"><Loader2 className="size-8 animate-spin text-primary" /></div>;
   }
   if (notFound) {
     return (
@@ -167,43 +154,38 @@ function RoomPage() {
 
   const isHost = room.host_id === user.id;
   const isOwner = room.word_owner_id === user.id;
+  const isMyTurn = room.current_turn_user_id === user.id;
   const ownerName = players.find((p) => p.user_id === room.word_owner_id)?.display_name;
+  const turnName = players.find((p) => p.user_id === room.current_turn_user_id)?.display_name;
 
   return (
     <div className="min-h-screen p-3 md:p-6">
       <div className="max-w-6xl mx-auto">
-        <Header room={room} isHost={isHost} />
+        <Header room={room} />
         <div className="grid lg:grid-cols-[260px_1fr] gap-4">
           <PlayerList players={players} room={room} meId={user.id} />
           <div className="space-y-4">
             <GameState
-              room={room}
-              players={players}
-              isHost={isHost}
-              isOwner={isOwner}
-              ownerName={ownerName}
-              meId={user.id}
-              meName={getDisplayName(user)}
+              room={room} players={players} isHost={isHost} isOwner={isOwner}
+              ownerName={ownerName} turnName={turnName} isMyTurn={isMyTurn}
+              meId={user.id} meName={getDisplayName(user)}
             />
-            <Chat
-              messages={messages}
-              meId={user.id}
-              meName={getDisplayName(user)}
-              room={room}
-              isOwner={isOwner}
-              chatRef={chatRef}
-            />
+            {(room.status === "playing" || room.status === "round_over") && (
+              <Chat
+                messages={messages} meId={user.id} meName={getDisplayName(user)}
+                room={room} players={players} isOwner={isOwner} isMyTurn={isMyTurn}
+                chatRef={chatRef}
+              />
+            )}
           </div>
         </div>
       </div>
-      {room.status === "finished" && (
-        <WinnerOverlay room={room} isHost={isHost} />
-      )}
+      {room.status === "finished" && <FinalResults room={room} players={players} isHost={isHost} />}
     </div>
   );
 }
 
-function Header({ room, isHost }: { room: Room; isHost: boolean }) {
+function Header({ room }: { room: Room }) {
   const [copied, setCopied] = useState(false);
   function copy() {
     navigator.clipboard.writeText(room.code);
@@ -212,56 +194,53 @@ function Header({ room, isHost }: { room: Room; isHost: boolean }) {
     setTimeout(() => setCopied(false), 1500);
   }
   function share() {
-    const url = `${window.location.origin}/room/${room.code}`;
-    navigator.clipboard.writeText(url);
+    navigator.clipboard.writeText(`${window.location.origin}/room/${room.code}`);
     toast.success("Invite link copied");
   }
   return (
     <header className="flex flex-wrap items-center gap-3 mb-4">
-      <Link to="/">
-        <Button variant="ghost" size="sm"><ArrowLeft className="size-4" /></Button>
-      </Link>
+      <Link to="/"><Button variant="ghost" size="sm"><ArrowLeft className="size-4" /></Button></Link>
       <div className="flex items-center gap-2">
         <Sparkles className="size-5 text-primary" />
         <span className="font-display text-lg font-bold">Word Hunt</span>
       </div>
+      <Badge variant="secondary" className="ml-1">
+        Round {Math.min(room.round_number, room.max_rounds)} / {room.max_rounds}
+      </Badge>
       <div className="flex-1" />
       <div className="flex items-center gap-2">
-        <div className="font-mono font-bold tracking-widest text-lg bg-card px-3 py-1.5 rounded-lg border-2">
-          {room.code}
-        </div>
+        <div className="font-mono font-bold tracking-widest text-lg bg-card px-3 py-1.5 rounded-lg border-2">{room.code}</div>
         <Button size="sm" variant="outline" onClick={copy}>
           {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
         </Button>
-        <Button size="sm" variant="secondary" onClick={share} className="hidden sm:inline-flex">
-          Share link
-        </Button>
+        <Button size="sm" variant="secondary" onClick={share} className="hidden sm:inline-flex">Share link</Button>
       </div>
     </header>
   );
 }
 
 function PlayerList({ players, room, meId }: { players: Player[]; room: Room; meId: string }) {
+  const sorted = players.slice().sort((a, b) => b.score - a.score);
   return (
     <Card className="p-4 h-fit">
       <h3 className="font-display font-bold text-sm uppercase tracking-wider text-muted-foreground mb-3">
         Players ({players.length})
       </h3>
       <ul className="space-y-2">
-        {players.map((p) => {
+        {sorted.map((p) => {
           const isHost = p.user_id === room.host_id;
           const isOwner = p.user_id === room.word_owner_id;
           const isMe = p.user_id === meId;
-          const isWinner = p.user_id === room.winner_id;
+          const isTurn = p.user_id === room.current_turn_user_id && room.status === "playing";
           return (
-            <li key={p.id} className="flex items-center gap-2 text-sm">
+            <li key={p.id} className={`flex items-center gap-2 text-sm rounded-md px-1.5 py-1 ${isTurn ? "bg-primary/10 ring-1 ring-primary/30" : ""}`}>
               <div className="size-8 rounded-full bg-gradient-to-br from-primary/30 to-accent/40 flex items-center justify-center font-bold text-xs">
                 {p.display_name.slice(0, 2).toUpperCase()}
               </div>
               <span className="font-medium truncate flex-1">
                 {p.display_name}{isMe && <span className="text-muted-foreground"> (you)</span>}
               </span>
-              {isWinner && <Trophy className="size-4 text-warning" />}
+              <span className="font-mono font-bold text-sm tabular-nums">{p.score}</span>
               {isOwner && <Badge variant="default" className="text-[10px] px-1.5 py-0">Word</Badge>}
               {isHost && !isOwner && <Crown className="size-4 text-warning" />}
             </li>
@@ -273,10 +252,10 @@ function PlayerList({ players, room, meId }: { players: Player[]; room: Room; me
 }
 
 function GameState({
-  room, players, isHost, isOwner, ownerName, meId, meName,
+  room, players, isHost, isOwner, ownerName, turnName, isMyTurn, meId, meName,
 }: {
   room: Room; players: Player[]; isHost: boolean; isOwner: boolean;
-  ownerName?: string; meId: string; meName: string;
+  ownerName?: string; turnName?: string; isMyTurn: boolean; meId: string; meName: string;
 }) {
   const [word, setWord] = useState("");
   const [selectedOwner, setSelectedOwner] = useState<string>(meId);
@@ -288,25 +267,58 @@ function GameState({
     if (players.length < 2) return toast.error("Need at least 2 players");
     const ownerPlayer = players.find((p) => p.user_id === selectedOwner);
     if (!ownerPlayer) return toast.error("Pick the word owner");
-    const { error } = await supabase
-      .from("rooms")
-      .update({
-        secret_word: w.toLowerCase(),
-        word_owner_id: ownerPlayer.user_id,
-        status: "playing",
-        winner_id: null,
-        winner_name: null,
-      })
-      .eq("id", room.id);
+    const firstTurn = nextTurnUserId(players, ownerPlayer.user_id, null);
+    const { error } = await supabase.from("rooms").update({
+      secret_word: w.toLowerCase(),
+      word_owner_id: ownerPlayer.user_id,
+      status: "playing",
+      current_turn_user_id: firstTurn,
+      round_winner_id: null,
+      round_winner_name: null,
+    }).eq("id", room.id);
     if (error) return toast.error(error.message);
     await supabase.from("room_messages").insert({
-      room_id: room.id,
-      user_id: meId,
-      display_name: meName,
-      kind: "system",
-      content: `${ownerPlayer.display_name} picked a secret word. Let the questions begin!`,
+      room_id: room.id, user_id: meId, display_name: meName, kind: "system",
+      content: `Round ${room.round_number} — ${ownerPlayer.display_name} picked a secret word.`,
     });
     setWord("");
+  }
+
+  async function nextRound() {
+    const nextNum = room.round_number + 1;
+    if (nextNum > room.max_rounds) return finishMatch();
+    const { error } = await supabase.from("rooms").update({
+      status: "waiting",
+      round_number: nextNum,
+      secret_word: null,
+      word_owner_id: null,
+      current_turn_user_id: null,
+      round_winner_id: null,
+      round_winner_name: null,
+    }).eq("id", room.id);
+    if (error) return toast.error(error.message);
+  }
+
+  async function finishMatch() {
+    const top = players.slice().sort((a, b) => b.score - a.score)[0];
+    const { error } = await supabase.from("rooms").update({
+      status: "finished",
+      winner_id: top?.user_id ?? null,
+      winner_name: top?.display_name ?? null,
+    }).eq("id", room.id);
+    if (error) return toast.error(error.message);
+  }
+
+  async function resetMatch() {
+    // host can restart the whole match
+    await Promise.all(players.map((p) =>
+      supabase.from("room_players").update({ score: 0 }).eq("id", p.id)
+    ));
+    await supabase.from("rooms").update({
+      status: "waiting", round_number: 1, secret_word: null, word_owner_id: null,
+      current_turn_user_id: null, round_winner_id: null, round_winner_name: null,
+      winner_id: null, winner_name: null,
+    }).eq("id", room.id);
   }
 
   if (room.status === "waiting") {
@@ -315,33 +327,23 @@ function GameState({
         <Card className="p-6 text-center">
           <CircleHelp className="size-10 mx-auto text-muted-foreground mb-2" />
           <h3 className="font-display font-bold text-lg">Waiting for the host…</h3>
-          <p className="text-sm text-muted-foreground">
-            The host is picking the secret word and the word owner.
-          </p>
+          <p className="text-sm text-muted-foreground">Round {room.round_number} of {room.max_rounds} is being set up.</p>
         </Card>
       );
     }
     return (
       <Card className="p-6">
-        <h3 className="font-display font-bold text-lg mb-1">Set up the round</h3>
-        <p className="text-sm text-muted-foreground mb-4">
-          Choose the player who will hold the word, then type the secret word.
-        </p>
+        <h3 className="font-display font-bold text-lg mb-1">Set up round {room.round_number} of {room.max_rounds}</h3>
+        <p className="text-sm text-muted-foreground mb-4">Pick who holds the word, then type the secret.</p>
         <form onSubmit={startRound} className="space-y-3">
           <div>
             <label className="text-sm font-medium block mb-1.5">Word owner</label>
             <div className="flex flex-wrap gap-2">
               {players.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setSelectedOwner(p.user_id)}
+                <button key={p.id} type="button" onClick={() => setSelectedOwner(p.user_id)}
                   className={`px-3 py-1.5 rounded-full border-2 text-sm font-medium transition ${
-                    selectedOwner === p.user_id
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-card border-border hover:border-primary/50"
-                  }`}
-                >
+                    selectedOwner === p.user_id ? "bg-primary text-primary-foreground border-primary" : "bg-card border-border hover:border-primary/50"
+                  }`}>
                   {p.display_name}{p.user_id === meId && " (you)"}
                 </button>
               ))}
@@ -349,17 +351,10 @@ function GameState({
           </div>
           <div>
             <label className="text-sm font-medium block mb-1.5">Secret word</label>
-            <Input
-              value={word}
-              onChange={(e) => setWord(e.target.value)}
-              placeholder="e.g. elephant"
-              maxLength={40}
-              type={selectedOwner === meId ? "text" : "password"}
-            />
+            <Input value={word} onChange={(e) => setWord(e.target.value)} placeholder="e.g. elephant"
+              maxLength={40} type={selectedOwner === meId ? "text" : "password"} />
             <p className="text-xs text-muted-foreground mt-1">
-              {selectedOwner === meId
-                ? "Only the word owner sees the word."
-                : "Hidden so other players can’t peek over your shoulder."}
+              {selectedOwner === meId ? "Only the word owner sees the word." : "Hidden so other players can't peek."}
             </p>
           </div>
           <Button type="submit" className="w-full" size="lg">
@@ -373,24 +368,44 @@ function GameState({
   if (room.status === "playing") {
     return (
       <Card className="p-5 bg-gradient-to-br from-primary/5 to-accent/10 border-primary/20">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Round in progress</p>
-            <h3 className="font-display font-bold text-lg">
-              {isOwner
-                ? `You hold the word: `
-                : `${ownerName ?? "Someone"} holds the word`}
-              {isOwner && room.secret_word && (
-                <span className="text-primary ml-1">{room.secret_word}</span>
-              )}
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              {isOwner
-                ? "Answer questions with Yes / No / Partially."
-                : "Ask yes/no questions or submit a guess."}
-            </p>
-          </div>
-        </div>
+        <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+          Round {room.round_number} of {room.max_rounds}
+        </p>
+        <h3 className="font-display font-bold text-lg">
+          {isOwner
+            ? <>You hold the word{room.secret_word && <>: <span className="text-primary">{room.secret_word}</span></>}</>
+            : <>{ownerName ?? "Someone"} holds the word</>}
+        </h3>
+        <p className="text-sm text-muted-foreground mt-1">
+          {isOwner ? "Answer with Yes / No / Partially. Tap Got It if a question reveals the word."
+            : isMyTurn ? "It's your turn — ask a yes/no question."
+            : `Waiting for ${turnName ?? "next player"} to ask…`}
+        </p>
+      </Card>
+    );
+  }
+
+  if (room.status === "round_over") {
+    const isFinal = room.round_number >= room.max_rounds;
+    return (
+      <Card className="p-6 text-center border-2 border-primary/40">
+        <PartyPopper className="size-10 mx-auto text-primary mb-2" />
+        <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+          Round {room.round_number} complete
+        </p>
+        <h3 className="font-display text-2xl font-bold mb-1">
+          {room.round_winner_name ?? "No one"} wins the round
+        </h3>
+        <p className="text-muted-foreground mb-4">
+          The word was <strong className="text-foreground">{room.secret_word}</strong>.
+        </p>
+        {isHost ? (
+          <Button onClick={nextRound} size="lg" className="w-full">
+            {isFinal ? "Show final results" : `Start round ${room.round_number + 1}`}
+          </Button>
+        ) : (
+          <p className="text-sm text-muted-foreground italic">Waiting for the host…</p>
+        )}
       </Card>
     );
   }
@@ -399,51 +414,56 @@ function GameState({
 }
 
 function Chat({
-  messages, meId, meName, room, isOwner, chatRef,
+  messages, meId, meName, room, players, isOwner, isMyTurn, chatRef,
 }: {
-  messages: Message[]; meId: string; meName: string; room: Room;
-  isOwner: boolean; chatRef: React.RefObject<HTMLDivElement | null>;
+  messages: Message[]; meId: string; meName: string; room: Room; players: Player[];
+  isOwner: boolean; isMyTurn: boolean; chatRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const [text, setText] = useState("");
-  const [mode, setMode] = useState<"question" | "guess">("question");
   const playing = room.status === "playing";
+  const canAsk = playing && isMyTurn && !isOwner;
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
     const t = text.trim();
     if (!t) return;
-    if (!playing) return toast.error("Round hasn't started");
-    if (mode === "guess") {
-      const correct = !!room.secret_word && t.toLowerCase() === room.secret_word.toLowerCase();
-      const { error } = await supabase.from("room_messages").insert({
-        room_id: room.id, user_id: meId, display_name: meName,
-        kind: "guess", content: t, is_correct: correct,
-      });
-      if (error) return toast.error(error.message);
-      if (correct) {
-        await supabase.from("rooms").update({
-          status: "finished", winner_id: meId, winner_name: meName,
-        }).eq("id", room.id);
-      }
-    } else {
-      if (isOwner) return toast.error("The word owner can't ask questions");
-      const { error } = await supabase.from("room_messages").insert({
-        room_id: room.id, user_id: meId, display_name: meName,
-        kind: "question", content: t,
-      });
-      if (error) return toast.error(error.message);
-    }
+    if (!canAsk) return toast.error(isOwner ? "You hold the word" : "Not your turn");
+    const { error } = await supabase.from("room_messages").insert({
+      room_id: room.id, user_id: meId, display_name: meName,
+      kind: "question", content: t,
+    });
+    if (error) return toast.error(error.message);
     setText("");
   }
 
-  async function answer(msgId: string, response: "yes" | "no" | "partially") {
-    const { error } = await supabase.from("room_messages")
-      .update({ response }).eq("id", msgId);
-    if (error) toast.error(error.message);
+  async function answer(msg: Message, response: "yes" | "no" | "partially" | "got_it") {
+    const { error } = await supabase.from("room_messages").update({ response, is_correct: response === "got_it" }).eq("id", msg.id);
+    if (error) return toast.error(error.message);
+
+    if (response === "got_it") {
+      // round winner = question asker
+      const winner = players.find((p) => p.user_id === msg.user_id);
+      if (winner) {
+        await supabase.from("room_players").update({ score: winner.score + 1 }).eq("id", winner.id);
+      }
+      await supabase.from("rooms").update({
+        status: "round_over",
+        round_winner_id: msg.user_id,
+        round_winner_name: msg.display_name,
+      }).eq("id", room.id);
+      await supabase.from("room_messages").insert({
+        room_id: room.id, user_id: meId, display_name: meName, kind: "system",
+        content: `🎉 ${msg.display_name} got it! The word was "${room.secret_word}".`,
+      });
+    } else {
+      // advance turn
+      const next = nextTurnUserId(players, room.word_owner_id, room.current_turn_user_id);
+      await supabase.from("rooms").update({ current_turn_user_id: next }).eq("id", room.id);
+    }
   }
 
   return (
-    <Card className="flex flex-col h-[60vh] min-h-[420px] overflow-hidden">
+    <Card className="flex flex-col h-[55vh] min-h-[380px] overflow-hidden">
       <div ref={chatRef} className="flex-1 overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && (
           <div className="text-center text-sm text-muted-foreground py-12">
@@ -456,37 +476,20 @@ function Chat({
         ))}
       </div>
       <div className="border-t bg-muted/30 p-3">
-        <div className="flex gap-1 mb-2">
-          <Button
-            type="button" size="sm"
-            variant={mode === "question" ? "default" : "ghost"}
-            onClick={() => setMode("question")}
-            disabled={isOwner}
-          >
-            <HelpCircle className="size-3.5 mr-1" /> Question
-          </Button>
-          <Button
-            type="button" size="sm"
-            variant={mode === "guess" ? "default" : "ghost"}
-            onClick={() => setMode("guess")}
-          >
-            <Target className="size-3.5 mr-1" /> Guess
-          </Button>
-        </div>
         <form onSubmit={send} className="flex gap-2">
           <Input
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder={
-              !playing ? "Waiting for round to start…" :
-              mode === "guess" ? "Type your guess…" :
+              !playing ? "Round is over." :
               isOwner ? "You hold the word — wait for questions." :
-              "Is it an animal?"
+              isMyTurn ? "Ask a yes/no question…" :
+              "Waiting for your turn…"
             }
-            disabled={!playing || (mode === "question" && isOwner)}
+            disabled={!canAsk}
             maxLength={200}
           />
-          <Button type="submit" disabled={!playing || !text.trim()}>
+          <Button type="submit" disabled={!canAsk || !text.trim()}>
             <Send className="size-4" />
           </Button>
         </form>
@@ -499,57 +502,45 @@ function MessageRow({
   m, isMine, isOwner, onAnswer,
 }: {
   m: Message; isMine: boolean; isOwner: boolean;
-  onAnswer: (id: string, r: "yes" | "no" | "partially") => void;
+  onAnswer: (m: Message, r: "yes" | "no" | "partially" | "got_it") => void;
 }) {
   if (m.kind === "system") {
-    return (
-      <div className="text-center text-xs text-muted-foreground italic py-1">
-        {m.content}
-      </div>
-    );
+    return <div className="text-center text-xs text-muted-foreground italic py-1">{m.content}</div>;
   }
   const align = isMine ? "items-end" : "items-start";
-  const bubble = m.kind === "guess"
-    ? m.is_correct
-      ? "bg-success text-success-foreground"
-      : "bg-warning/20 text-warning-foreground border border-warning/40"
-    : isMine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground";
+  const bubble = isMine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground";
 
   return (
     <div className={`flex flex-col ${align}`}>
-      <div className="text-[11px] text-muted-foreground mb-0.5 px-1">
-        {m.display_name} · {m.kind === "guess" ? "guess" : "question"}
-      </div>
-      <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${bubble}`}>
-        {m.kind === "guess" && <Target className="size-3.5 inline mr-1 opacity-70" />}
-        {m.content}
-        {m.kind === "guess" && m.is_correct && <span className="ml-2 font-bold">✓ Correct!</span>}
-      </div>
+      <div className="text-[11px] text-muted-foreground mb-0.5 px-1">{m.display_name}</div>
+      <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${bubble}`}>{m.content}</div>
       {m.kind === "question" && (
         <div className="mt-1.5">
           {m.response ? (
-            <Badge
-              variant="secondary"
-              className={
-                m.response === "yes" ? "bg-success/15 text-success border-success/30" :
-                m.response === "no" ? "bg-destructive/15 text-destructive border-destructive/30" :
-                "bg-warning/15 text-warning-foreground border-warning/30"
-              }
-            >
+            <Badge variant="secondary" className={
+              m.response === "yes" ? "bg-success/15 text-success border-success/30" :
+              m.response === "no" ? "bg-destructive/15 text-destructive border-destructive/30" :
+              m.response === "got_it" ? "bg-primary/15 text-primary border-primary/30" :
+              "bg-warning/15 text-warning-foreground border-warning/30"
+            }>
               {m.response === "yes" && <Check className="size-3 mr-1" />}
               {m.response === "no" && <X className="size-3 mr-1" />}
-              {m.response.charAt(0).toUpperCase() + m.response.slice(1)}
+              {m.response === "got_it" && <Trophy className="size-3 mr-1" />}
+              {m.response === "got_it" ? "Got it!" : m.response.charAt(0).toUpperCase() + m.response.slice(1)}
             </Badge>
           ) : isOwner ? (
-            <div className="flex gap-1.5">
-              <Button size="sm" className="h-7 px-3 bg-success hover:bg-success/90 text-success-foreground" onClick={() => onAnswer(m.id, "yes")}>
+            <div className="flex flex-wrap gap-1.5">
+              <Button size="sm" className="h-7 px-3 bg-success hover:bg-success/90 text-success-foreground" onClick={() => onAnswer(m, "yes")}>
                 <Check className="size-3.5 mr-1" /> Yes
               </Button>
-              <Button size="sm" variant="destructive" className="h-7 px-3" onClick={() => onAnswer(m.id, "no")}>
+              <Button size="sm" variant="destructive" className="h-7 px-3" onClick={() => onAnswer(m, "no")}>
                 <X className="size-3.5 mr-1" /> No
               </Button>
-              <Button size="sm" className="h-7 px-3 bg-warning hover:bg-warning/90 text-warning-foreground" onClick={() => onAnswer(m.id, "partially")}>
+              <Button size="sm" className="h-7 px-3 bg-warning hover:bg-warning/90 text-warning-foreground" onClick={() => onAnswer(m, "partially")}>
                 Partially
+              </Button>
+              <Button size="sm" className="h-7 px-3" onClick={() => onAnswer(m, "got_it")}>
+                <Trophy className="size-3.5 mr-1" /> Got It
               </Button>
             </div>
           ) : (
@@ -561,30 +552,50 @@ function MessageRow({
   );
 }
 
-function WinnerOverlay({ room, isHost }: { room: Room; isHost: boolean }) {
-  async function newRound() {
+function FinalResults({ room, players, isHost }: { room: Room; players: Player[]; isHost: boolean }) {
+  const ranked = players.slice().sort((a, b) => b.score - a.score);
+  const topScore = ranked[0]?.score ?? 0;
+
+  async function playAgain() {
+    await Promise.all(players.map((p) =>
+      supabase.from("room_players").update({ score: 0 }).eq("id", p.id)
+    ));
     await supabase.from("rooms").update({
-      status: "waiting", secret_word: null, word_owner_id: null,
+      status: "waiting", round_number: 1, secret_word: null, word_owner_id: null,
+      current_turn_user_id: null, round_winner_id: null, round_winner_name: null,
       winner_id: null, winner_name: null,
     }).eq("id", room.id);
   }
+
   return (
-    <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in">
-      <Card className="max-w-md w-full p-8 text-center border-2 border-primary shadow-2xl">
-        <div className="size-16 rounded-full bg-warning/20 flex items-center justify-center mx-auto mb-3">
-          <Trophy className="size-9 text-warning" />
+    <div className="fixed inset-0 bg-background/85 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in">
+      <Card className="max-w-md w-full p-8 border-2 border-primary shadow-2xl">
+        <div className="text-center mb-6">
+          <div className="size-16 rounded-full bg-warning/20 flex items-center justify-center mx-auto mb-3">
+            <Trophy className="size-9 text-warning" />
+          </div>
+          <h2 className="font-display text-3xl font-bold mb-1">Match complete!</h2>
+          <p className="text-lg">
+            <strong className="text-primary">{room.winner_name ?? "No one"}</strong> wins the match.
+          </p>
         </div>
-        <h2 className="font-display text-3xl font-bold mb-1">We have a winner!</h2>
-        <p className="text-lg mb-1">
-          <strong className="text-primary">{room.winner_name}</strong> guessed it.
-        </p>
-        <p className="text-muted-foreground mb-6">
-          The word was <strong className="text-foreground">{room.secret_word}</strong>.
-        </p>
+        <ol className="space-y-2 mb-6">
+          {ranked.map((p, i) => {
+            const isTop = p.score === topScore && topScore > 0;
+            return (
+              <li key={p.id} className={`flex items-center gap-3 rounded-lg px-3 py-2 ${isTop ? "bg-primary/10 border border-primary/30" : "bg-muted/50"}`}>
+                <span className="font-display font-bold text-lg w-6 text-center">{i + 1}</span>
+                <span className="flex-1 font-medium truncate">{p.display_name}</span>
+                {isTop && <Trophy className="size-4 text-warning" />}
+                <span className="font-mono font-bold text-lg tabular-nums">{p.score}</span>
+              </li>
+            );
+          })}
+        </ol>
         {isHost ? (
-          <Button onClick={newRound} className="w-full" size="lg">Play another round</Button>
+          <Button onClick={playAgain} className="w-full" size="lg">Play another match</Button>
         ) : (
-          <p className="text-sm text-muted-foreground">Waiting for host to start a new round…</p>
+          <p className="text-sm text-muted-foreground text-center">Waiting for host to start a new match…</p>
         )}
       </Card>
     </div>
