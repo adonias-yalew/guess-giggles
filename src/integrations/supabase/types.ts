@@ -64,6 +64,7 @@ export type Database = {
           id: string
           joined_at: string
           room_id: string
+          score: number
           user_id: string
         }
         Insert: {
@@ -71,6 +72,7 @@ export type Database = {
           id?: string
           joined_at?: string
           room_id: string
+          score?: number
           user_id: string
         }
         Update: {
@@ -78,6 +80,7 @@ export type Database = {
           id?: string
           joined_at?: string
           room_id?: string
+          score?: number
           user_id?: string
         }
         Relationships: [
@@ -94,8 +97,13 @@ export type Database = {
         Row: {
           code: string
           created_at: string
+          current_turn_user_id: string | null
           host_id: string
           id: string
+          max_rounds: number
+          round_number: number
+          round_winner_id: string | null
+          round_winner_name: string | null
           secret_word: string | null
           status: string
           winner_id: string | null
@@ -105,8 +113,13 @@ export type Database = {
         Insert: {
           code: string
           created_at?: string
+          current_turn_user_id?: string | null
           host_id: string
           id?: string
+          max_rounds?: number
+          round_number?: number
+          round_winner_id?: string | null
+          round_winner_name?: string | null
           secret_word?: string | null
           status?: string
           winner_id?: string | null
@@ -116,8 +129,13 @@ export type Database = {
         Update: {
           code?: string
           created_at?: string
+          current_turn_user_id?: string | null
           host_id?: string
           id?: string
+          max_rounds?: number
+          round_number?: number
+          round_winner_id?: string | null
+          round_winner_name?: string | null
           secret_word?: string | null
           status?: string
           winner_id?: string | null
