@@ -14,7 +14,118 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      room_messages: {
+        Row: {
+          content: string
+          created_at: string
+          display_name: string
+          id: string
+          is_correct: boolean
+          kind: string
+          response: string | null
+          room_id: string
+          user_id: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          display_name: string
+          id?: string
+          is_correct?: boolean
+          kind: string
+          response?: string | null
+          room_id: string
+          user_id: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          display_name?: string
+          id?: string
+          is_correct?: boolean
+          kind?: string
+          response?: string | null
+          room_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_messages_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      room_players: {
+        Row: {
+          display_name: string
+          id: string
+          joined_at: string
+          room_id: string
+          user_id: string
+        }
+        Insert: {
+          display_name: string
+          id?: string
+          joined_at?: string
+          room_id: string
+          user_id: string
+        }
+        Update: {
+          display_name?: string
+          id?: string
+          joined_at?: string
+          room_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_players_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      rooms: {
+        Row: {
+          code: string
+          created_at: string
+          host_id: string
+          id: string
+          secret_word: string | null
+          status: string
+          winner_id: string | null
+          winner_name: string | null
+          word_owner_id: string | null
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          host_id: string
+          id?: string
+          secret_word?: string | null
+          status?: string
+          winner_id?: string | null
+          winner_name?: string | null
+          word_owner_id?: string | null
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          host_id?: string
+          id?: string
+          secret_word?: string | null
+          status?: string
+          winner_id?: string | null
+          winner_name?: string | null
+          word_owner_id?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
