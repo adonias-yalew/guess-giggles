@@ -1,0 +1,1 @@
+ALTER TABLE public.rooms ADD COLUMN IF NOT EXISTS round_started_at TIMESTAMPTZ;

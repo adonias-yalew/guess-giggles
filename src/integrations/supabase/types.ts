@@ -102,6 +102,7 @@ export type Database = {
           id: string
           max_rounds: number
           round_number: number
+          round_started_at: string | null
           round_winner_id: string | null
           round_winner_name: string | null
           secret_word: string | null
@@ -118,6 +119,7 @@ export type Database = {
           id?: string
           max_rounds?: number
           round_number?: number
+          round_started_at?: string | null
           round_winner_id?: string | null
           round_winner_name?: string | null
           secret_word?: string | null
@@ -134,6 +136,7 @@ export type Database = {
           id?: string
           max_rounds?: number
           round_number?: number
+          round_started_at?: string | null
           round_winner_id?: string | null
           round_winner_name?: string | null
           secret_word?: string | null
