@@ -519,8 +519,8 @@ function Chat({
       const asker = players.find((p) => p.user_id === msg.user_id);
       const owner = players.find((p) => p.user_id === room.word_owner_id);
       const ops: Promise<unknown>[] = [];
-      if (asker) ops.push(supabase.from("room_players").update({ score: asker.score + 10 }).eq("id", asker.id));
-      if (owner) ops.push(supabase.from("room_players").update({ score: owner.score + roundQuestionCount }).eq("id", owner.id));
+      if (asker) ops.push(Promise.resolve(supabase.from("room_players").update({ score: asker.score + 10 }).eq("id", asker.id)));
+      if (owner) ops.push(Promise.resolve(supabase.from("room_players").update({ score: owner.score + roundQuestionCount }).eq("id", owner.id)));
       await Promise.all(ops);
       await supabase.from("rooms").update({
         status: "round_over",
