@@ -395,39 +395,61 @@ function GameState({
   }
 
   if (room.status === "picking_word") {
-    if (isOwner) {
-      return (
-        <Card className="p-6">
+    return (
+      <>
+        <Card className="p-6 text-center">
+          <CircleHelp className="size-10 mx-auto text-muted-foreground mb-2" />
           <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
             Round {room.round_number} of {room.max_rounds}
           </p>
-          <h3 className="font-display font-bold text-lg mb-1">You're the Word Master 🎯</h3>
-          <p className="text-sm text-muted-foreground mb-4">Pick a secret word for the others to guess.</p>
-          <form onSubmit={submitWord} className="space-y-3">
-            <Input
-              value={word}
-              onChange={(e) => setWord(e.target.value)}
-              placeholder="e.g. elephant"
-              maxLength={40}
-              autoFocus
-            />
-            <Button type="submit" className="w-full" size="lg">
-              <Target className="size-4 mr-2" /> Lock in word
-            </Button>
-          </form>
+          <h3 className="font-display font-bold text-lg">
+            {isOwner ? "Your turn to pick a secret word" : `${ownerName ?? "Someone"} is picking a word…`}
+          </h3>
+          <p className="text-sm text-muted-foreground mt-1">
+            The round starts once the Word Master locks in a word.
+          </p>
         </Card>
-      );
-    }
-    return (
-      <Card className="p-6 text-center">
-        <CircleHelp className="size-10 mx-auto text-muted-foreground mb-2" />
-        <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-          Round {room.round_number} of {room.max_rounds}
-        </p>
-        <h3 className="font-display font-bold text-lg">{ownerName ?? "Someone"} is picking a word…</h3>
-      </Card>
+        <div className="fixed inset-0 bg-background/85 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in">
+          <Card className="max-w-md w-full p-8 border-2 border-primary shadow-2xl">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold text-center">
+              Round {room.round_number} of {room.max_rounds}
+            </p>
+            {isOwner ? (
+              <>
+                <h3 className="font-display text-2xl font-bold mb-1 text-center">You're the Word Master 🎯</h3>
+                <p className="text-sm text-muted-foreground mb-4 text-center">
+                  Pick a secret word. Others will have up to {MAX_QUESTIONS} questions to guess it.
+                </p>
+                <form onSubmit={submitWord} className="space-y-3">
+                  <Input
+                    value={word}
+                    onChange={(e) => setWord(e.target.value)}
+                    placeholder="e.g. elephant"
+                    maxLength={40}
+                    autoFocus
+                  />
+                  <Button type="submit" className="w-full" size="lg">
+                    <Target className="size-4 mr-2" /> Lock in word & start round
+                  </Button>
+                </form>
+              </>
+            ) : (
+              <div className="text-center py-2">
+                <Loader2 className="size-10 mx-auto text-primary animate-spin mb-3" />
+                <h3 className="font-display text-xl font-bold mb-1">
+                  {ownerName ?? "The Word Master"} is choosing a word…
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  The round will start as soon as they lock it in.
+                </p>
+              </div>
+            )}
+          </Card>
+        </div>
+      </>
     );
   }
+
 
   if (room.status === "playing") {
     return (
