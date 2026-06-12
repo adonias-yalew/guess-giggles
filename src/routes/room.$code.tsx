@@ -470,7 +470,7 @@ function GameState({
                 : `Waiting for ${turnName ?? "next player"} to ask…`}
             </p>
           </div>
-          <Badge variant="secondary" className="font-mono">{roundQuestionCount} Qs</Badge>
+          <Badge variant="secondary" className="font-mono whitespace-nowrap">Questions: {roundQuestionCount} / {MAX_QUESTIONS}</Badge>
         </div>
         {isOwner && (
           <Button onClick={giveUp} variant="outline" size="sm" className="mt-4 w-full">
