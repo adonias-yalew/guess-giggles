@@ -51,6 +51,9 @@ type Message = {
   created_at: string;
 };
 
+const MAX_QUESTIONS = 15;
+
+
 function sortedPlayers(players: Player[]): Player[] {
   return players.slice().sort((a, b) => (a.joined_at ?? "").localeCompare(b.joined_at ?? ""));
 }
