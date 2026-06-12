@@ -51,6 +51,9 @@ type Message = {
   created_at: string;
 };
 
+const MAX_QUESTIONS = 15;
+
+
 function sortedPlayers(players: Player[]): Player[] {
   return players.slice().sort((a, b) => (a.joined_at ?? "").localeCompare(b.joined_at ?? ""));
 }
@@ -392,39 +395,61 @@ function GameState({
   }
 
   if (room.status === "picking_word") {
-    if (isOwner) {
-      return (
-        <Card className="p-6">
+    return (
+      <>
+        <Card className="p-6 text-center">
+          <CircleHelp className="size-10 mx-auto text-muted-foreground mb-2" />
           <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
             Round {room.round_number} of {room.max_rounds}
           </p>
-          <h3 className="font-display font-bold text-lg mb-1">You're the Word Master 🎯</h3>
-          <p className="text-sm text-muted-foreground mb-4">Pick a secret word for the others to guess.</p>
-          <form onSubmit={submitWord} className="space-y-3">
-            <Input
-              value={word}
-              onChange={(e) => setWord(e.target.value)}
-              placeholder="e.g. elephant"
-              maxLength={40}
-              autoFocus
-            />
-            <Button type="submit" className="w-full" size="lg">
-              <Target className="size-4 mr-2" /> Lock in word
-            </Button>
-          </form>
+          <h3 className="font-display font-bold text-lg">
+            {isOwner ? "Your turn to pick a secret word" : `${ownerName ?? "Someone"} is picking a word…`}
+          </h3>
+          <p className="text-sm text-muted-foreground mt-1">
+            The round starts once the Word Master locks in a word.
+          </p>
         </Card>
-      );
-    }
-    return (
-      <Card className="p-6 text-center">
-        <CircleHelp className="size-10 mx-auto text-muted-foreground mb-2" />
-        <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-          Round {room.round_number} of {room.max_rounds}
-        </p>
-        <h3 className="font-display font-bold text-lg">{ownerName ?? "Someone"} is picking a word…</h3>
-      </Card>
+        <div className="fixed inset-0 bg-background/85 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in">
+          <Card className="max-w-md w-full p-8 border-2 border-primary shadow-2xl">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold text-center">
+              Round {room.round_number} of {room.max_rounds}
+            </p>
+            {isOwner ? (
+              <>
+                <h3 className="font-display text-2xl font-bold mb-1 text-center">You're the Word Master 🎯</h3>
+                <p className="text-sm text-muted-foreground mb-4 text-center">
+                  Pick a secret word. Others will have up to {MAX_QUESTIONS} questions to guess it.
+                </p>
+                <form onSubmit={submitWord} className="space-y-3">
+                  <Input
+                    value={word}
+                    onChange={(e) => setWord(e.target.value)}
+                    placeholder="e.g. elephant"
+                    maxLength={40}
+                    autoFocus
+                  />
+                  <Button type="submit" className="w-full" size="lg">
+                    <Target className="size-4 mr-2" /> Lock in word & start round
+                  </Button>
+                </form>
+              </>
+            ) : (
+              <div className="text-center py-2">
+                <Loader2 className="size-10 mx-auto text-primary animate-spin mb-3" />
+                <h3 className="font-display text-xl font-bold mb-1">
+                  {ownerName ?? "The Word Master"} is choosing a word…
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  The round will start as soon as they lock it in.
+                </p>
+              </div>
+            )}
+          </Card>
+        </div>
+      </>
     );
   }
+
 
   if (room.status === "playing") {
     return (
@@ -445,7 +470,7 @@ function GameState({
                 : `Waiting for ${turnName ?? "next player"} to ask…`}
             </p>
           </div>
-          <Badge variant="secondary" className="font-mono">{roundQuestionCount} Qs</Badge>
+          <Badge variant="secondary" className="font-mono whitespace-nowrap">Questions: {roundQuestionCount} / {MAX_QUESTIONS}</Badge>
         </div>
         {isOwner && (
           <Button onClick={giveUp} variant="outline" size="sm" className="mt-4 w-full">
@@ -495,12 +520,14 @@ function Chat({
 }) {
   const [text, setText] = useState("");
   const playing = room.status === "playing";
-  const canAsk = playing && isMyTurn && !isOwner;
+  const limitReached = roundQuestionCount >= MAX_QUESTIONS;
+  const canAsk = playing && isMyTurn && !isOwner && !limitReached;
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
     const t = text.trim();
     if (!t) return;
+    if (limitReached) return toast.error(`Question limit reached (${MAX_QUESTIONS})`);
     if (!canAsk) return toast.error(isOwner ? "You hold the word" : "Not your turn");
     const { error } = await supabase.from("room_messages").insert({
       room_id: room.id, user_id: meId, display_name: meName,
@@ -514,10 +541,11 @@ function Chat({
     const { error } = await supabase.from("room_messages").update({ response, is_correct: response === "got_it" }).eq("id", msg.id);
     if (error) return toast.error(error.message);
 
+    const owner = players.find((p) => p.user_id === room.word_owner_id);
+
     if (response === "got_it") {
       // Asker: +10 for the correct guess. Word Master: +1 per question asked this round.
       const asker = players.find((p) => p.user_id === msg.user_id);
-      const owner = players.find((p) => p.user_id === room.word_owner_id);
       const ops: Promise<unknown>[] = [];
       if (asker) ops.push(Promise.resolve(supabase.from("room_players").update({ score: asker.score + 10 }).eq("id", asker.id)));
       if (owner) ops.push(Promise.resolve(supabase.from("room_players").update({ score: owner.score + roundQuestionCount }).eq("id", owner.id)));
@@ -531,14 +559,36 @@ function Chat({
         room_id: room.id, user_id: meId, display_name: meName, kind: "system",
         content: `🎉 ${msg.display_name} got it after ${roundQuestionCount} question${roundQuestionCount === 1 ? "" : "s"}! +10 to ${msg.display_name}${owner ? `, +${roundQuestionCount} to ${owner.display_name}` : ""}. The word was "${room.secret_word}".`,
       });
-    } else {
-      const next = nextTurnUserId(players, room.word_owner_id, room.current_turn_user_id);
-      await supabase.from("rooms").update({ current_turn_user_id: next }).eq("id", room.id);
+      return;
     }
+
+    // Non-got_it response: check if we've hit the question limit
+    if (roundQuestionCount >= MAX_QUESTIONS) {
+      if (owner) await supabase.from("room_players").update({ score: owner.score + 10 }).eq("id", owner.id);
+      await supabase.from("rooms").update({
+        status: "round_over",
+        round_winner_id: null,
+        round_winner_name: null,
+      }).eq("id", room.id);
+      await supabase.from("room_messages").insert({
+        room_id: room.id, user_id: meId, display_name: meName, kind: "system",
+        content: `⛔ Question limit reached (${MAX_QUESTIONS}). ${owner?.display_name ?? "Word Master"} wins the round +10. The word was "${room.secret_word}".`,
+      });
+      return;
+    }
+
+    const next = nextTurnUserId(players, room.word_owner_id, room.current_turn_user_id);
+    await supabase.from("rooms").update({ current_turn_user_id: next }).eq("id", room.id);
   }
 
   return (
     <Card className="flex flex-col h-[55vh] min-h-[380px] overflow-hidden">
+      <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-2 text-xs">
+        <span className="font-semibold uppercase tracking-wider text-muted-foreground">Question chat</span>
+        <span className={`font-mono font-bold ${limitReached ? "text-destructive" : "text-foreground"}`}>
+          Questions: {roundQuestionCount} / {MAX_QUESTIONS}
+        </span>
+      </div>
       <div ref={chatRef} className="flex-1 overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && (
           <div className="text-center text-sm text-muted-foreground py-12">
@@ -557,8 +607,9 @@ function Chat({
             onChange={(e) => setText(e.target.value)}
             placeholder={
               !playing ? "Round is over." :
+              limitReached ? `Question limit reached (${MAX_QUESTIONS}).` :
               isOwner ? "You hold the word — wait for questions." :
-              isMyTurn ? "Ask a yes/no question…" :
+              isMyTurn ? `Ask a yes/no question… (${MAX_QUESTIONS - roundQuestionCount} left)` :
               "Waiting for your turn…"
             }
             disabled={!canAsk}
@@ -572,6 +623,7 @@ function Chat({
     </Card>
   );
 }
+
 
 function MessageRow({
   m, isMine, isOwner, onAnswer,
