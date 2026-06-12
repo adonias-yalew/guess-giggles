@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import {
   ArrowLeft, Check, Copy, Crown, HelpCircle, Loader2, Send,
-  Sparkles, Target, Trophy, X, CircleHelp, PartyPopper,
+  Sparkles, Target, Trophy, X, CircleHelp, PartyPopper, Flag,
 } from "lucide-react";
 
 export const Route = createFileRoute("/room/$code")({
@@ -28,7 +28,7 @@ type Room = {
   host_id: string;
   word_owner_id: string | null;
   secret_word: string | null;
-  status: string; // 'waiting' | 'playing' | 'round_over' | 'finished'
+  status: string; // 'waiting' | 'picking_word' | 'playing' | 'round_over' | 'finished'
   winner_id: string | null;
   winner_name: string | null;
   round_number: number;
@@ -36,6 +36,7 @@ type Room = {
   current_turn_user_id: string | null;
   round_winner_id: string | null;
   round_winner_name: string | null;
+  round_started_at: string | null;
 };
 type Player = { id: string; user_id: string; display_name: string; score: number; joined_at?: string };
 type Message = {
@@ -50,11 +51,12 @@ type Message = {
   created_at: string;
 };
 
+function sortedPlayers(players: Player[]): Player[] {
+  return players.slice().sort((a, b) => (a.joined_at ?? "").localeCompare(b.joined_at ?? ""));
+}
+
 function nextTurnUserId(players: Player[], ownerId: string | null, currentTurnId: string | null): string | null {
-  const askers = players
-    .slice()
-    .sort((a, b) => (a.joined_at ?? "").localeCompare(b.joined_at ?? ""))
-    .filter((p) => p.user_id !== ownerId);
+  const askers = sortedPlayers(players).filter((p) => p.user_id !== ownerId);
   if (askers.length === 0) return null;
   if (!currentTurnId) return askers[0].user_id;
   const idx = askers.findIndex((p) => p.user_id === currentTurnId);
@@ -158,6 +160,11 @@ function RoomPage() {
   const ownerName = players.find((p) => p.user_id === room.word_owner_id)?.display_name;
   const turnName = players.find((p) => p.user_id === room.current_turn_user_id)?.display_name;
 
+  // Count questions asked during the current round
+  const roundQuestionCount = room.round_started_at
+    ? messages.filter((m) => m.kind === "question" && m.created_at >= room.round_started_at!).length
+    : 0;
+
   return (
     <div className="min-h-screen p-3 md:p-6">
       <div className="max-w-6xl mx-auto">
@@ -166,15 +173,16 @@ function RoomPage() {
           <PlayerList players={players} room={room} meId={user.id} />
           <div className="space-y-4">
             <GameState
-              room={room} players={players} isHost={isHost} isOwner={isOwner}
+              room={room} players={players} messages={messages} isHost={isHost} isOwner={isOwner}
               ownerName={ownerName} turnName={turnName} isMyTurn={isMyTurn}
               meId={user.id} meName={getDisplayName(user)}
+              roundQuestionCount={roundQuestionCount}
             />
             {(room.status === "playing" || room.status === "round_over") && (
               <Chat
                 messages={messages} meId={user.id} meName={getDisplayName(user)}
                 room={room} players={players} isOwner={isOwner} isMyTurn={isMyTurn}
-                chatRef={chatRef}
+                chatRef={chatRef} roundQuestionCount={roundQuestionCount}
               />
             )}
           </div>
@@ -197,6 +205,7 @@ function Header({ room }: { room: Room }) {
     navigator.clipboard.writeText(`${window.location.origin}/room/${room.code}`);
     toast.success("Invite link copied");
   }
+  const showRound = room.status !== "waiting" && room.max_rounds > 0;
   return (
     <header className="flex flex-wrap items-center gap-3 mb-4">
       <Link to="/"><Button variant="ghost" size="sm"><ArrowLeft className="size-4" /></Button></Link>
@@ -204,9 +213,11 @@ function Header({ room }: { room: Room }) {
         <Sparkles className="size-5 text-primary" />
         <span className="font-display text-lg font-bold">Word Hunt</span>
       </div>
-      <Badge variant="secondary" className="ml-1">
-        Round {Math.min(room.round_number, room.max_rounds)} / {room.max_rounds}
-      </Badge>
+      {showRound && (
+        <Badge variant="secondary" className="ml-1">
+          Round {Math.min(room.round_number, room.max_rounds)} / {room.max_rounds}
+        </Badge>
+      )}
       <div className="flex-1" />
       <div className="flex items-center gap-2">
         <div className="font-mono font-bold tracking-widest text-lg bg-card px-3 py-1.5 rounded-lg border-2">{room.code}</div>
@@ -220,7 +231,7 @@ function Header({ room }: { room: Room }) {
 }
 
 function PlayerList({ players, room, meId }: { players: Player[]; room: Room; meId: string }) {
-  const sorted = players.slice().sort((a, b) => b.score - a.score);
+  const sorted = players.slice().sort((a, b) => b.score - a.score || a.display_name.localeCompare(b.display_name));
   return (
     <Card className="p-4 h-fit">
       <h3 className="font-display font-bold text-sm uppercase tracking-wider text-muted-foreground mb-3">
@@ -241,7 +252,7 @@ function PlayerList({ players, room, meId }: { players: Player[]; room: Room; me
                 {p.display_name}{isMe && <span className="text-muted-foreground"> (you)</span>}
               </span>
               <span className="font-mono font-bold text-sm tabular-nums">{p.score}</span>
-              {isOwner && <Badge variant="default" className="text-[10px] px-1.5 py-0">Word</Badge>}
+              {isOwner && <Badge variant="default" className="text-[10px] px-1.5 py-0">Master</Badge>}
               {isHost && !isOwner && <Crown className="size-4 text-warning" />}
             </li>
           );
@@ -252,55 +263,102 @@ function PlayerList({ players, room, meId }: { players: Player[]; room: Room; me
 }
 
 function GameState({
-  room, players, isHost, isOwner, ownerName, turnName, isMyTurn, meId, meName,
+  room, players, messages, isHost, isOwner, ownerName, turnName, isMyTurn, meId, meName, roundQuestionCount,
 }: {
-  room: Room; players: Player[]; isHost: boolean; isOwner: boolean;
+  room: Room; players: Player[]; messages: Message[]; isHost: boolean; isOwner: boolean;
   ownerName?: string; turnName?: string; isMyTurn: boolean; meId: string; meName: string;
+  roundQuestionCount: number;
 }) {
   const [word, setWord] = useState("");
-  const [selectedOwner, setSelectedOwner] = useState<string>(meId);
 
-  async function startRound(e: React.FormEvent) {
-    e.preventDefault();
-    const w = word.trim();
-    if (!w) return toast.error("Enter a word");
+  // ---- WAITING (pre-match): host starts the match. Rounds = number of players.
+  async function startMatch() {
     if (players.length < 2) return toast.error("Need at least 2 players");
-    const ownerPlayer = players.find((p) => p.user_id === selectedOwner);
-    if (!ownerPlayer) return toast.error("Pick the word owner");
-    const firstTurn = nextTurnUserId(players, ownerPlayer.user_id, null);
+    const ordered = sortedPlayers(players);
+    const firstMaster = ordered[0];
     const { error } = await supabase.from("rooms").update({
-      secret_word: w.toLowerCase(),
-      word_owner_id: ownerPlayer.user_id,
-      status: "playing",
-      current_turn_user_id: firstTurn,
+      status: "picking_word",
+      round_number: 1,
+      max_rounds: players.length,
+      word_owner_id: firstMaster.user_id,
+      secret_word: null,
+      current_turn_user_id: null,
       round_winner_id: null,
       round_winner_name: null,
+      round_started_at: null,
+      winner_id: null,
+      winner_name: null,
     }).eq("id", room.id);
     if (error) return toast.error(error.message);
     await supabase.from("room_messages").insert({
       room_id: room.id, user_id: meId, display_name: meName, kind: "system",
-      content: `Round ${room.round_number} — ${ownerPlayer.display_name} picked a secret word.`,
+      content: `Match started — ${players.length} rounds. ${firstMaster.display_name} is the first Word Master.`,
+    });
+  }
+
+  // ---- PICKING_WORD: only the word master submits the secret
+  async function submitWord(e: React.FormEvent) {
+    e.preventDefault();
+    const w = word.trim();
+    if (!w) return toast.error("Enter a word");
+    const firstTurn = nextTurnUserId(players, room.word_owner_id, null);
+    const { error } = await supabase.from("rooms").update({
+      secret_word: w.toLowerCase(),
+      status: "playing",
+      current_turn_user_id: firstTurn,
+      round_started_at: new Date().toISOString(),
+    }).eq("id", room.id);
+    if (error) return toast.error(error.message);
+    await supabase.from("room_messages").insert({
+      room_id: room.id, user_id: meId, display_name: meName, kind: "system",
+      content: `Round ${room.round_number} — ${meName} picked a secret word.`,
     });
     setWord("");
   }
 
-  async function nextRound() {
-    const nextNum = room.round_number + 1;
-    if (nextNum > room.max_rounds) return finishMatch();
-    const { error } = await supabase.from("rooms").update({
-      status: "waiting",
-      round_number: nextNum,
-      secret_word: null,
-      word_owner_id: null,
-      current_turn_user_id: null,
+  // ---- PLAYING: word master gives up (nobody guessed) → +10 bonus
+  async function giveUp() {
+    const owner = players.find((p) => p.user_id === room.word_owner_id);
+    if (!owner) return;
+    await supabase.from("room_players").update({ score: owner.score + 10 }).eq("id", owner.id);
+    await supabase.from("rooms").update({
+      status: "round_over",
       round_winner_id: null,
       round_winner_name: null,
     }).eq("id", room.id);
+    await supabase.from("room_messages").insert({
+      room_id: room.id, user_id: meId, display_name: meName, kind: "system",
+      content: `🛡️ Nobody guessed it! ${owner.display_name} earns 10 bonus points. The word was "${room.secret_word}".`,
+    });
+  }
+
+  // ---- ROUND_OVER: advance to next round, or finish the match
+  async function nextRound() {
+    const nextNum = room.round_number + 1;
+    if (nextNum > room.max_rounds) return finishMatch();
+    const ordered = sortedPlayers(players);
+    const nextMaster = ordered[nextNum - 1];
+    if (!nextMaster) return finishMatch();
+    const { error } = await supabase.from("rooms").update({
+      status: "picking_word",
+      round_number: nextNum,
+      word_owner_id: nextMaster.user_id,
+      secret_word: null,
+      current_turn_user_id: null,
+      round_winner_id: null,
+      round_winner_name: null,
+      round_started_at: null,
+    }).eq("id", room.id);
     if (error) return toast.error(error.message);
+    await supabase.from("room_messages").insert({
+      room_id: room.id, user_id: meId, display_name: meName, kind: "system",
+      content: `Round ${nextNum} — ${nextMaster.display_name} is now the Word Master.`,
+    });
   }
 
   async function finishMatch() {
-    const top = players.slice().sort((a, b) => b.score - a.score)[0];
+    const ranked = rankPlayers(players);
+    const top = ranked[0];
     const { error } = await supabase.from("rooms").update({
       status: "finished",
       winner_id: top?.user_id ?? null,
@@ -309,58 +367,61 @@ function GameState({
     if (error) return toast.error(error.message);
   }
 
-  async function resetMatch() {
-    // host can restart the whole match
-    await Promise.all(players.map((p) =>
-      supabase.from("room_players").update({ score: 0 }).eq("id", p.id)
-    ));
-    await supabase.from("rooms").update({
-      status: "waiting", round_number: 1, secret_word: null, word_owner_id: null,
-      current_turn_user_id: null, round_winner_id: null, round_winner_name: null,
-      winner_id: null, winner_name: null,
-    }).eq("id", room.id);
-  }
+  // -----------------------------------------------------------
 
   if (room.status === "waiting") {
-    if (!isHost) {
+    return (
+      <Card className="p-6">
+        <h3 className="font-display font-bold text-lg mb-1">Lobby</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Each player will be Word Master once — the match will have <strong>{Math.max(players.length, 2)}</strong> {players.length === 1 ? "round" : "rounds"}.
+        </p>
+        {isHost ? (
+          <Button onClick={startMatch} className="w-full" size="lg" disabled={players.length < 2}>
+            <Target className="size-4 mr-2" />
+            {players.length < 2 ? "Need at least 2 players" : `Start match (${players.length} rounds)`}
+          </Button>
+        ) : (
+          <div className="text-center py-3">
+            <CircleHelp className="size-8 mx-auto text-muted-foreground mb-2" />
+            <p className="text-sm text-muted-foreground">Waiting for the host to start the match…</p>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  if (room.status === "picking_word") {
+    if (isOwner) {
       return (
-        <Card className="p-6 text-center">
-          <CircleHelp className="size-10 mx-auto text-muted-foreground mb-2" />
-          <h3 className="font-display font-bold text-lg">Waiting for the host…</h3>
-          <p className="text-sm text-muted-foreground">Round {room.round_number} of {room.max_rounds} is being set up.</p>
+        <Card className="p-6">
+          <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+            Round {room.round_number} of {room.max_rounds}
+          </p>
+          <h3 className="font-display font-bold text-lg mb-1">You're the Word Master 🎯</h3>
+          <p className="text-sm text-muted-foreground mb-4">Pick a secret word for the others to guess.</p>
+          <form onSubmit={submitWord} className="space-y-3">
+            <Input
+              value={word}
+              onChange={(e) => setWord(e.target.value)}
+              placeholder="e.g. elephant"
+              maxLength={40}
+              autoFocus
+            />
+            <Button type="submit" className="w-full" size="lg">
+              <Target className="size-4 mr-2" /> Lock in word
+            </Button>
+          </form>
         </Card>
       );
     }
     return (
-      <Card className="p-6">
-        <h3 className="font-display font-bold text-lg mb-1">Set up round {room.round_number} of {room.max_rounds}</h3>
-        <p className="text-sm text-muted-foreground mb-4">Pick who holds the word, then type the secret.</p>
-        <form onSubmit={startRound} className="space-y-3">
-          <div>
-            <label className="text-sm font-medium block mb-1.5">Word owner</label>
-            <div className="flex flex-wrap gap-2">
-              {players.map((p) => (
-                <button key={p.id} type="button" onClick={() => setSelectedOwner(p.user_id)}
-                  className={`px-3 py-1.5 rounded-full border-2 text-sm font-medium transition ${
-                    selectedOwner === p.user_id ? "bg-primary text-primary-foreground border-primary" : "bg-card border-border hover:border-primary/50"
-                  }`}>
-                  {p.display_name}{p.user_id === meId && " (you)"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium block mb-1.5">Secret word</label>
-            <Input value={word} onChange={(e) => setWord(e.target.value)} placeholder="e.g. elephant"
-              maxLength={40} type={selectedOwner === meId ? "text" : "password"} />
-            <p className="text-xs text-muted-foreground mt-1">
-              {selectedOwner === meId ? "Only the word owner sees the word." : "Hidden so other players can't peek."}
-            </p>
-          </div>
-          <Button type="submit" className="w-full" size="lg">
-            <Target className="size-4 mr-2" /> Start round
-          </Button>
-        </form>
+      <Card className="p-6 text-center">
+        <CircleHelp className="size-10 mx-auto text-muted-foreground mb-2" />
+        <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+          Round {room.round_number} of {room.max_rounds}
+        </p>
+        <h3 className="font-display font-bold text-lg">{ownerName ?? "Someone"} is picking a word…</h3>
       </Card>
     );
   }
@@ -368,19 +429,29 @@ function GameState({
   if (room.status === "playing") {
     return (
       <Card className="p-5 bg-gradient-to-br from-primary/5 to-accent/10 border-primary/20">
-        <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-          Round {room.round_number} of {room.max_rounds}
-        </p>
-        <h3 className="font-display font-bold text-lg">
-          {isOwner
-            ? <>You hold the word{room.secret_word && <>: <span className="text-primary">{room.secret_word}</span></>}</>
-            : <>{ownerName ?? "Someone"} holds the word</>}
-        </h3>
-        <p className="text-sm text-muted-foreground mt-1">
-          {isOwner ? "Answer with Yes / No / Partially. Tap Got It if a question reveals the word."
-            : isMyTurn ? "It's your turn — ask a yes/no question."
-            : `Waiting for ${turnName ?? "next player"} to ask…`}
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+              Round {room.round_number} of {room.max_rounds}
+            </p>
+            <h3 className="font-display font-bold text-lg">
+              {isOwner
+                ? <>You hold the word{room.secret_word && <>: <span className="text-primary">{room.secret_word}</span></>}</>
+                : <>{ownerName ?? "Someone"} holds the word</>}
+            </h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              {isOwner ? "Answer with Yes / No / Partially. Tap Got It if a question reveals the word."
+                : isMyTurn ? "It's your turn — ask a yes/no question."
+                : `Waiting for ${turnName ?? "next player"} to ask…`}
+            </p>
+          </div>
+          <Badge variant="secondary" className="font-mono">{roundQuestionCount} Qs</Badge>
+        </div>
+        {isOwner && (
+          <Button onClick={giveUp} variant="outline" size="sm" className="mt-4 w-full">
+            <Flag className="size-4 mr-2" /> Nobody got it — end round (+10 bonus)
+          </Button>
+        )}
       </Card>
     );
   }
@@ -394,7 +465,9 @@ function GameState({
           Round {room.round_number} complete
         </p>
         <h3 className="font-display text-2xl font-bold mb-1">
-          {room.round_winner_name ?? "No one"} wins the round
+          {room.round_winner_name
+            ? <>{room.round_winner_name} cracked it!</>
+            : <>Nobody guessed the word</>}
         </h3>
         <p className="text-muted-foreground mb-4">
           The word was <strong className="text-foreground">{room.secret_word}</strong>.
@@ -414,10 +487,11 @@ function GameState({
 }
 
 function Chat({
-  messages, meId, meName, room, players, isOwner, isMyTurn, chatRef,
+  messages, meId, meName, room, players, isOwner, isMyTurn, chatRef, roundQuestionCount,
 }: {
   messages: Message[]; meId: string; meName: string; room: Room; players: Player[];
   isOwner: boolean; isMyTurn: boolean; chatRef: React.RefObject<HTMLDivElement | null>;
+  roundQuestionCount: number;
 }) {
   const [text, setText] = useState("");
   const playing = room.status === "playing";
@@ -441,11 +515,13 @@ function Chat({
     if (error) return toast.error(error.message);
 
     if (response === "got_it") {
-      // round winner = question asker
-      const winner = players.find((p) => p.user_id === msg.user_id);
-      if (winner) {
-        await supabase.from("room_players").update({ score: winner.score + 1 }).eq("id", winner.id);
-      }
+      // Asker: +10 for the correct guess. Word Master: +1 per question asked this round.
+      const asker = players.find((p) => p.user_id === msg.user_id);
+      const owner = players.find((p) => p.user_id === room.word_owner_id);
+      const ops: Promise<unknown>[] = [];
+      if (asker) ops.push(supabase.from("room_players").update({ score: asker.score + 10 }).eq("id", asker.id));
+      if (owner) ops.push(supabase.from("room_players").update({ score: owner.score + roundQuestionCount }).eq("id", owner.id));
+      await Promise.all(ops);
       await supabase.from("rooms").update({
         status: "round_over",
         round_winner_id: msg.user_id,
@@ -453,10 +529,9 @@ function Chat({
       }).eq("id", room.id);
       await supabase.from("room_messages").insert({
         room_id: room.id, user_id: meId, display_name: meName, kind: "system",
-        content: `🎉 ${msg.display_name} got it! The word was "${room.secret_word}".`,
+        content: `🎉 ${msg.display_name} got it after ${roundQuestionCount} question${roundQuestionCount === 1 ? "" : "s"}! +10 to ${msg.display_name}${owner ? `, +${roundQuestionCount} to ${owner.display_name}` : ""}. The word was "${room.secret_word}".`,
       });
     } else {
-      // advance turn
       const next = nextTurnUserId(players, room.word_owner_id, room.current_turn_user_id);
       await supabase.from("rooms").update({ current_turn_user_id: next }).eq("id", room.id);
     }
@@ -552,8 +627,19 @@ function MessageRow({
   );
 }
 
+// Tie-breakers: 1) highest score, 2) earliest joined_at, 3) display name A→Z.
+function rankPlayers(players: Player[]): Player[] {
+  return players.slice().sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const ja = a.joined_at ?? "";
+    const jb = b.joined_at ?? "";
+    if (ja !== jb) return ja.localeCompare(jb);
+    return a.display_name.localeCompare(b.display_name);
+  });
+}
+
 function FinalResults({ room, players, isHost }: { room: Room; players: Player[]; isHost: boolean }) {
-  const ranked = players.slice().sort((a, b) => b.score - a.score);
+  const ranked = rankPlayers(players);
   const topScore = ranked[0]?.score ?? 0;
 
   async function playAgain() {
@@ -563,9 +649,11 @@ function FinalResults({ room, players, isHost }: { room: Room; players: Player[]
     await supabase.from("rooms").update({
       status: "waiting", round_number: 1, secret_word: null, word_owner_id: null,
       current_turn_user_id: null, round_winner_id: null, round_winner_name: null,
-      winner_id: null, winner_name: null,
+      winner_id: null, winner_name: null, round_started_at: null,
     }).eq("id", room.id);
   }
+
+  const winnerName = ranked[0]?.display_name ?? room.winner_name ?? "No one";
 
   return (
     <div className="fixed inset-0 bg-background/85 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in">
@@ -576,12 +664,12 @@ function FinalResults({ room, players, isHost }: { room: Room; players: Player[]
           </div>
           <h2 className="font-display text-3xl font-bold mb-1">Match complete!</h2>
           <p className="text-lg">
-            <strong className="text-primary">{room.winner_name ?? "No one"}</strong> wins the match.
+            <strong className="text-primary">{winnerName}</strong> wins the match.
           </p>
         </div>
         <ol className="space-y-2 mb-6">
           {ranked.map((p, i) => {
-            const isTop = p.score === topScore && topScore > 0;
+            const isTop = p.score === topScore && topScore > 0 && i === 0;
             return (
               <li key={p.id} className={`flex items-center gap-3 rounded-lg px-3 py-2 ${isTop ? "bg-primary/10 border border-primary/30" : "bg-muted/50"}`}>
                 <span className="font-display font-bold text-lg w-6 text-center">{i + 1}</span>
